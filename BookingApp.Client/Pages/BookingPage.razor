@@ -1,0 +1,236 @@
+﻿@page "/booking"
+@rendermode InteractiveAuto
+@inject HttpClient Http
+
+<div class="container mt-4">
+    <h3>Bokningssystem - Utrustning (US-04 & US-05)</h3>
+    <hr />
+
+    @if (models == null)
+    {
+        <p><em>Laddar utrustning från API:et...</em></p>
+    }
+    else
+    {
+        <div class="mb-3">
+            <label class="form-label font-weight-bold">Välj Utrustningsmodell:</label>
+            <select class="form-control" @bind="selectedModelId" @bind:after="OnModelSelectedAsync">
+                <option value="">-- Välj modell --</option>
+                @foreach (var m in models)
+                {
+                    <option value="@m.Id">@m.Name (@m.DailyRate kr/dag)</option>
+                }
+            </select>
+        </div>
+
+        @if (selectedModel != null)
+        {
+            <div class="row mb-3">
+                <div class="col">
+                    <label class="form-label">Startdatum:</label>
+                    <input type="date" class="form-control" @bind="startDate" @bind:after="CalculatePriceAsync" />
+                </div>
+                <div class="col">
+                    <label class="form-label">Slutdatum:</label>
+                    <input type="date" class="form-control" @bind="endDate" @bind:after="CalculatePriceAsync" />
+                </div>
+            </div>
+
+            <!-- US-04: Realtidsberäkning -->
+            <div class="alert alert-info">
+                <h4>Beräknat totalpris i realtid (US-04): <strong>@calculatedPrice kr</strong></h4>
+                <small>Både första och sista dagen räknas som hyresdagar.</small>
+            </div>
+
+            <button class="btn btn-primary btn-lg" @onclick="ConfirmBookingAsync">Bekräfta Bokning (US-05)</button>
+        }
+    }
+
+    @if (latestBooking != null)
+    {
+        <div class="alert alert-success mt-4">
+            <h4>Bokning genomförd!</h4>
+            <p>Bokningsnummer: <strong>@latestBooking.BookingNumber</strong></p>
+            <p>Låst totalpris (AgreedTotalPrice): <strong>@latestBooking.AgreedTotalPrice kr</strong></p>
+        </div>
+    }
+
+    <hr class="mt-5" />
+
+    <!-- Steg 3: Admin-knapp för att testa prislåsningen -->
+    <div class="card bg-light mt-4 p-4">
+        <h4>Simulera Admin-åtgärd (Test av Prislåsning)</h4>
+        <p>Ändra dagspriset på den valda modellen till ett valfritt belopp för att verifiera att tidigare gjorda bokningar behåller sitt låsta pris.</p>
+
+        <div class="input-group mb-3">
+            <span class="input-group-text">Nytt dagspris (kr):</span>
+            <input type="number" class="form-control" @bind="newCustomRate" />
+            <button class="btn btn-danger" @onclick="SimulateAdminRateChangeAsync">Ändra dagspris</button>
+        </div>
+
+        @if (adminMessage != null)
+        {
+            <div class="text-success font-weight-bold mt-2">@adminMessage</div>
+        }
+    </div>
+
+    <!-- Sektion för att visa alla sparade bokningar -->
+    <hr class="mt-5" />
+    <div class="card mt-4 bg-white p-4 shadow-sm">
+        <h4>Alla sparade bokningar i systemet</h4>
+        <p class="text-muted">Klicka på knappen för att hämta alla lagrade bokningar och verifiera att tidigare bokningar behållit sina låsta priser.</p>
+        <button class="btn btn-secondary mb-3" @onclick="LoadAllBookings">Hämta alla bokningar</button>
+
+        @if (allBookings != null)
+        {
+            <table class="table-striped table">
+                <thead>
+                    <tr>
+                        <th>Bokningsnummer</th>
+                        <th>Modell ID</th>
+                        <th>Start</th>
+                        <th>Slut</th>
+                        <th>Låst Pris (AgreedTotalPrice)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var b in allBookings)
+                    {
+                        <tr>
+                            <td><strong>@b.BookingNumber</strong></td>
+                            <td>@b.ModelId</td>
+                            <td>@b.StartDate</td>
+                            <td>@b.EndDate</td>
+                            <td><span class="text-success font-weight-bold">@b.AgreedTotalPrice kr</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
+@code {
+    private List<EquipmentModel>? models;
+    private EquipmentModel? selectedModel;
+    private string selectedModelId = "";
+    private DateOnly startDate = DateOnly.FromDateTime(DateTime.Today);
+    private DateOnly endDate = DateOnly.FromDateTime(DateTime.Today.AddDays(2));
+    private decimal calculatedPrice = 0;
+    private Booking? latestBooking;
+    private string? adminMessage;
+    private List<Booking>? allBookings;
+    private decimal newCustomRate = 500m;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            models = await Http.GetFromJsonAsync<List<EquipmentModel>>("api/Booking/models");
+            if (models != null && models.Count > 0)
+            {
+                selectedModel = models[0];
+                selectedModelId = selectedModel.Id;
+                await CalculatePriceAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Fel vid hämtning av modeller: " + ex.Message);
+        }
+    }
+
+    private async Task OnModelSelectedAsync()
+    {
+        selectedModel = models?.FirstOrDefault(m => m.Id == selectedModelId);
+        await CalculatePriceAsync();
+    }
+
+    private async Task CalculatePriceAsync()
+    {
+        if (selectedModel != null)
+        {
+            try
+            {
+                string startStr = startDate.ToString("yyyy-MM-dd");
+                string endStr = endDate.ToString("yyyy-MM-dd");
+
+                var response = await Http.GetFromJsonAsync<PriceResponse>($"api/Booking/{selectedModel.Id}/calculate?start={startStr}&end={endStr}");
+                calculatedPrice = response?.TotalPrice ?? 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Fel vid prisberäkning: " + ex.Message);
+                calculatedPrice = 0;
+            }
+        }
+        else
+        {
+            calculatedPrice = 0;
+        }
+    }
+
+    private async Task ConfirmBookingAsync()
+    {
+        if (selectedModel == null) return;
+
+        try
+        {
+            var request = new BookingRequest(selectedModel.Id, startDate, endDate, calculatedPrice);
+            var response = await Http.PostAsJsonAsync("api/Booking/confirm", request);
+            if (response.IsSuccessStatusCode)
+            {
+                latestBooking = await response.Content.ReadFromJsonAsync<Booking>();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Fel vid bokning: " + ex.Message);
+        }
+    }
+
+    private async Task SimulateAdminRateChangeAsync()
+    {
+        if (selectedModel == null) return;
+
+        try
+        {
+            var request = new RateChangeRequest(selectedModel.Id, newCustomRate);
+            var response = await Http.PostAsJsonAsync("api/Booking/admin/change-rate", request);
+            if (response.IsSuccessStatusCode)
+            {
+                adminMessage = $"Dagspriset har ändrats till {newCustomRate} kr! Din tidigare bokning ovan påverkas inte.";
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Fel vid admin-ändring: " + ex.Message);
+        }
+    }
+
+    private async Task LoadAllBookings()
+    {
+        try
+        {
+            allBookings = await Http.GetFromJsonAsync<List<Booking>>("api/Booking/bookings");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Kunde inte hämta bokningar: " + ex.Message);
+        }
+    }
+
+    public record PriceResponse(decimal TotalPrice);
+    public record BookingRequest(string ModelId, DateOnly StartDate, DateOnly EndDate, decimal AcceptedPrice);
+    public record RateChangeRequest(string ModelId, decimal NewRate);
+    public class EquipmentModel { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public decimal DailyRate { get; set; } }
+
+    public class Booking
+    {
+        public string BookingNumber { get; set; } = "";
+        public string ModelId { get; set; } = "";
+        public DateOnly StartDate { get; set; }
+        public DateOnly EndDate { get; set; }
+        public decimal AgreedTotalPrice { get; set; }
+    }
+}
